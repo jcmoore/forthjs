@@ -1,11 +1,11 @@
 var Forth = require("../forth"),
-	forth = Forth.go ( function start (callforth) {
+	forth = Forth.head ( function start (callforth) {
 
 		var result = [1, 2, 3];
 
-		callforth.report(null, Date.now());
-		callforth.report(null, Date.now());
-		callforth.report(null, Date.now());
+		callforth.tell(null, Date.now());
+		callforth.tell(null, Date.now());
+		callforth.tell(null, Date.now());
 
 		if (Date.now() % 3) {
 			callforth ( null, result );
@@ -29,7 +29,7 @@ forth.bad ( function fail (err, callforth) {
 	console.log(["fail", err]);
 } );
 
-forth.status( function progress (callforth, warn, info) {
+forth.echo().echo().heard( function progress (callforth, warn, info) {
 	console.log(["progress", warn, info]);
 } );
 

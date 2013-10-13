@@ -5,7 +5,7 @@ var Forth = require("../forth"),
 	faultRatio = 3;
 
 src += (Date.now() % faultRatio) ? "" : "_NOT_A_VALID_FILE";
-Forth.node(fs, fs.readFile, src, "utf8").last(function (callforth, err, source) {
+Forth.invoke.call(fs, fs.readFile, src, "utf8", Forth.Filler).last(function (callforth, err, source) {
 	var problems;
 	if (err) {
 		problems = problems || [];
