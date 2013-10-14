@@ -1,22 +1,32 @@
 ( function ( target, exporter ) {
 	if ( typeof exports == "object" && typeof module == "object" ) {
-		exporter ( exports );
+		exporter ( exports, target );
 	} else if ( typeof define == "function" && define.amd ) {
-		define ( ["exports"], exporter );
+		define ( ["exports"], function (exports) {
+			return exporter ( exports, target );
+		} );
 	} else {
-		exporter ( target.acorn || ( target.acorn = {} ) );
+		exporter ( target.Forth || ( target.Forth = {} ), target );
 	}
-} ) ( this, function (exports) {
+} ) ( this, function (exports, root) {
 
 var run = function ( method, delay ) { return method(); },
 
+	// null or number indicating how long forth propogation should be delayed.
 	delay = 0,
+	// The method used to propogate forths.
 	plan = (delay !== null) ? setTimeout : run,
+	// null or number indicating how long transient param[] exists.
 	transientTimeToLive = 0,
+	// The method managing transient persistence.
 	shedule = (transientTimeToLive !== null) ? setTimeout : run,
 	
+	// Filler is a special/unique value used as an argument placeholder to improve memory reuse.
 	Filler = {},
-	noforth,
+
+	// nim is a mechanism to keep heard() invocations from consuming memory unnecessarily.
+	// (i.e. when no more signals of a certain type will be sent)
+	nim, // Assigned below.
 	
 	bitOffset = 16,
 
@@ -24,55 +34,22 @@ var run = function ( method, delay ) { return method(); },
 	// (i.e. down the "good" side of the tree)
 	BitSkip = 1 << bitOffset++,
 
-	BitLag = 1 << bitOffset++,
+	// The eventual setting permits delayed silencing -- this keeps the "stack-depth" low.
+	// (however, unexpected heard() signal behavior may be experienced)
+	BitEventual = 1 << bitOffset++,
 
-	// The trailing setting will cause the callforth-method to come from the last parameter.
-	// (the default behavior is to expect the callforth-method as the first parameter)
-	BitTrailing = 1 << bitOffset++,
+	// The rebel setting permits ignoring commands to abort "heard" signal passing.
+	// (i.e. down the "heard" tree)
+	BitRebel = 1 << bitOffset++,
+
+	// The lag setting indicates that any broadcast tell() signals should be delayed.
+	BitLag = 1 << bitOffset++,
 	
 
 
-	commonArgumentCount = 4, // ( target, method, bitmask, options )
+	commonArgumentCount = 4, // ( options, bitmask, target, method )
 
-	revar = function (vars) { // [ target, method, bitmask, options ]
-		var count = vars.length;
-		var result;
-		var undefined;
-
-		// Arguments may be omitted in accordance with the following rules:
-		// R00 -- "target" must always be followed by a "method" (which may be null).
-		// R01 -- "options" must always be preceded by a "bitmask" (which may be null).
-		// R02 -- typeof "bitmask" must never be "function".
-		// R03 -- prefer to "method" arguments to "options" arguments when type is ambiguous.
-
-		if (count < commonArgumentCount) {
-			if (count < 1) {
-			} else if (typeof vars[0] !== "function") {
-				// First argument is definitely the "target".
-				// (see R00)
-				// Second argument is probably the "method".
-				// Third argument is probably the "bitmask".
-			} else if (typeof vars[1] !== "function") { 
-				// (see R01 & R02)
-				// First argument is probably the "method".
-				// Second argument is probably the "bitmask".
-				// Third argument is probably the "options".
-				result = new Array (2 + !!vars[1] + !!vars[2]);
-				vars[2] && (result[3] = vars[2]);
-				vars[1] && (result[2] = vars[1]);
-				result[1] = vars[0];
-				result[0] = undefined;
-			} else { 
-				// (see R01 & R02)
-				// First argument is probably the "target".
-				// Second argument is probably the "method".
-				// Third argument is probably "bitmask".
-			}
-		}
-
-		return result;
-	},
-
+	// A common good() signal handler that invokes a "good" callforth passing all other parameters.
 	relay = function () {
 		var field = 0;
 		var callforth = arguments[field];
@@ -80,14 +57,13 @@ var run = function ( method, delay ) { return method(); },
 		var result;
 
 		arguments[0] = null; // Never errs.
-
 		result = callforth.apply(target, arguments);
-
 		arguments[0] = callforth;
 
 		return result;
 	},
 
+	// A common told() signal handler that invokes a callforth "tell" passing all other parameters.
 	resound = function ( callforth ) {
 		var field = 0;
 		var args = Array.prototype.slice.call(arguments, 1);
@@ -99,20 +75,44 @@ var run = function ( method, delay ) { return method(); },
 		return result;
 	},
 
-	Forth = module.exports = function ( target, method, bitmask, options ) {
-
-		var vars = revar(arguments);
-
-		if (vars) {
-			target = vars[0];
-			method = vars[1];
-			bitmask = vars[2];
-			options = vars[3];
+	// Place forth's callforth-method in the correct argument position and invoke provided-method.
+	launch = function (forth, field, args, target, method, repeatable) {
+		var callforth = args[field] = forth.come();
+		method.apply(target, args);
+		if (repeatable !== true) {
+			// Force last() signal handlers to respond.
+			// (even if no good() or bad() signals fired -- an "ugly" state)
+			callforth();
 		}
+	},
 
-		// A ("this") context with which to apply the provided-method.
-		if (target) {
-			this ["as?"] = target;
+	// Prepare a launch -- with cleanup.
+	sequence = function (forth, field, args, target, method) {
+		plan (function () {
+			launch(forth, field, args, target, method);
+			args[field] = Filler;
+		}, delay);
+	},
+
+	backfire = function (forth, args, target) {
+		forth.come().apply(target, args);
+	},
+
+	ricochet = function (forth, args, target) {
+		plan (function () {
+			backfire(forth, args, target);
+		}, delay);
+	},
+ 
+	Forth = module.exports = function ( options, bitmask, target, method ) {
+
+		var vars = arguments.length;
+
+		if (vars < commonArgumentCount) {
+			method = arguments[--vars];
+			target = arguments[--vars];
+			bitmask = arguments[--vars];
+			options = arguments[--vars];
 		}
 
 		// The provided-method that accepts a callforth-method as a (1st or 2nd) parameter.
@@ -120,10 +120,17 @@ var run = function ( method, delay ) { return method(); },
 			this ["in()"] = method;
 		}
 
+		// A ("this") context with which to apply the provided-method.
+		if (target) {
+			this ["as?"] = target;
+		}
+
+		// A set of configuration data encoded in a set of bits.
 		if (bitmask) {
 			this ["bits?"] = bitmask;
 		}
 
+		// A set of configuration data supplied as key-value pairs.
 		if (options) {
 			this ["opts[]"] = options;
 		}
@@ -199,10 +206,19 @@ Forth.prototype.come = function () {
 	call = this ["out()"] = function () {
 		var self = cache;
 		var args;
+		var bitfield;
+		var inconsistently;
 
 		if (cache) {
 			cache = null; // callforth should only respond meaningfully to invocation once.
 			args = self["arg[]"] = Array.prototype.slice.call(arguments);
+
+			bitfield = self["bits?"];
+
+			// Silence immediately if eventual consistency is not allowed.
+			if (!(inconsistently = (bitfield & BitEventual))) {
+				self.silence();
+			}
 
 			plan (function () {
 
@@ -213,16 +229,23 @@ Forth.prototype.come = function () {
 				var index;
 				var field;
 				var forth;
-				var method;
+				var propogate;
+
+				// Silence eventually if eventual consistency is allowed.
+				if (inconsistently) {
+					self.silence();
+				}
 
 				params = args.slice();
 				
 				if ((erred = params[0])) { // The first argument indicates errors by convention.
 					list = self["bad[]"];
 					field = 1;
-				} else {
+				} else if (params.length > 0) { // Not "ugly", as long as there were arguments.
 					list = self["good[]"];
 					field = 0;
+				} else { // It was "ugly".
+
 				}
 
 				if (list) {
@@ -230,22 +253,22 @@ Forth.prototype.come = function () {
 					for (index = 0; index < count; index++) {
 						// Invoke each forth's provided-method.
 						forth = list[index];
-						// Place each forth's callforth-method in the correct argument position.
-						params[field] = forth.come();
-						method = forth["in()"];
-						method.apply(forth["as?"], params);
+						launch(forth, field, params, forth["as?"], forth["in()"]);
 					}
 					params[field] = args[field];
 				}
 
-				if (erred && !( self["bits?"] & BitSkip )) { // Invoke all bad() handlers as necessary.
+				propogate = erred && !( bitfield & BitSkip );
+
+				if (propogate) {
+					// Invoke all bad() and last() handlers as necessary.
 					list = self["good[]"];
 					if (list) {
 						count = list.length;
 						for (index = 0; index < count; index++) {
-							// Pass the bad() signal down the good() part of the tree.
 							forth = list[index];
-							forth.come().apply(forth["as?"], args);
+							// Pass the bad() signal down the good() part of the tree.
+							backfire(forth, args, (this !== root ? this : self));
 						}
 					}
 				}
@@ -263,10 +286,7 @@ Forth.prototype.come = function () {
 					for (index = 0; index < count; index++) {
 						// Invoke each forth's provided-method.
 						forth = list[index];
-						// Place each forth's callforth-method in the correct argument position.
-						params[field] = forth.come();
-						method = forth["in()"];
-						method.apply(forth["as?"], params);
+						launch(forth, field, params, forth["as?"], forth["in()"]);
 					}
 					params[field] = Filler;
 					self.make( params );
@@ -275,7 +295,6 @@ Forth.prototype.come = function () {
 				self["good[]"] = null;
 				self["bad[]"] = null;
 				self["last[]"] = null;
-				self["heard[]"] = null;
 			}, delay);
 		}
 	};
@@ -284,25 +303,31 @@ Forth.prototype.come = function () {
 	// (Supports invocation with Forth.Filler as first argument for slight performance improvement)
 	call.tell = function () {
 		var self = cache;
+		var invoked;
 		var args;
+		var bitfield;
+		var inconsistently;
 		var list;
 		var count;
 		var index;
 		var field;
 		var forth;
-		var method;
+		var repeatable = true;
 
-		if (self && (list = self["heard[]"])) {
+		if (self && self["heard[]"]) {
 			field = 0;
-			count = list.length;
 			args = Array.prototype.slice.call(arguments);
 
 			// Forward heard() signals immediately unless lag was specified.
 			( ( self["bits?"] & BitLag ) ? plan : run ) (function () {
-				if (self["arg[]"]) {
-					// Do not send further heard() signals if 
+
+				if (!(list = self["heard[]"])) {
 					return;
 				}
+
+				invoked = self["arg[]"];
+
+				count = list.length;
 
 				if (count > field &&
 					args[field] !== Filler) {
@@ -313,10 +338,14 @@ Forth.prototype.come = function () {
 				for (index = 0; index < count; index++) {
 					// Invoke each forth's provided-method.
 					forth = list[index];
-					// Place each forth's callforth-method in the correct argument position.
-					args[field] = forth.come();
-					method = forth["in()"];
-					method.apply(forth["as?"], args);
+
+					bitfield = forth["bits?"];
+					inconsistently = (self["bits?"] & BitEventual);
+
+					// Do not send further heard() signals if callforth has been invoked.
+					if (!invoked || inconsistently) {
+						launch(forth, field, args, forth["as?"], forth["in()"], repeatable);
+					}
 				}
 				args[field] = Filler;
 			}, delay);
@@ -326,99 +355,126 @@ Forth.prototype.come = function () {
 	return call;
 };
 
-// Create a forth to handle a good() signal.
-Forth.prototype.good = function ( target, method, bitmask, options ) {
-
-	var vars = revar(arguments);
-
-	if (vars) {
-		target = vars[0];
-		method = vars[1];
-		bitmask = vars[2];
-		options = vars[3];
-	}
+// Prevent further heard() signal propocation as necessary
+Forth.prototype.silence = function () {
 	
+	var list;
+
+	if (list = this["heard[]"]) {
+		this["heard[]"] = null;
+
+		var count = list.length;
+		var index;
+		var forth;
+		var callforth;
+		
+		for (index = 0; index < count; index++) {
+			forth = list[index];
+			// Rebels cannot be forced into silence, they must quiet themselves.
+			if (!(forth["bits?"] & BitRebel)) {
+				callforth = forth.come();
+				callforth(); // Potentially "ugly".
+			}
+		}
+	}
+
+};
+
+// Create a forth to handle a good() signal.
+Forth.prototype.good = function ( options, bitmask, target, method ) {
+
+	var vars = arguments.length;
+
+	if (vars < commonArgumentCount) {
+		method = arguments[--vars];
+		target = arguments[--vars];
+		bitmask = arguments[--vars];
+		options = arguments[--vars];
+	}
+
 	var args = this["arg[]"]; // null unless this forth has already been callforth()ed.
 	var forth;
 	var field = 0;
 
 	if (!args) {
 		// callforth() has not yet been executed -- store the new forth.
-		forth = new Forth( target, method, bitmask, options );
+		forth = new Forth( options, bitmask, target, method );
 		(this ["good[]"] || (this ["good[]"] = [])).push(forth);
+	} else if (args.length < 1) {
+		return nim; // NOTE: here is a case where a trailing last() may not occur!
 	} else if (!args[0]) {
-		forth = new Forth( null, null, bitmask, options );
-		plan (function () {
-			// callforth() has already been executed with no error -- callforth() the new forth.
-			args[field] = forth.come();
-			method.apply(target, args);
-			args[field] = null;
-		}, delay);
+		// callforth() has already been executed with no error -- callforth() the new forth.
+		forth = new Forth( options, bitmask, null, null );
+		sequence(forth, field, args, target, method);
+	} else {
+		forth = new Forth( options, bitmask, null, null );
+		ricochet(forth, args, target);
 	}
 
 	return forth;
 };
 
 // Create a forth to handle a bad() signal.
-Forth.prototype.bad = function ( target, method, bitmask, options ) {
+Forth.prototype.bad = function ( options, bitmask, target, method ) {
 
-	var vars = revar(arguments);
+	var vars = arguments.length;
 
-	if (vars) {
-		target = vars[0];
-		method = vars[1];
-		bitmask = vars[2];
-		options = vars[3];
+	if (vars < commonArgumentCount) {
+		method = arguments[--vars];
+		target = arguments[--vars];
+		bitmask = arguments[--vars];
+		options = arguments[--vars];
 	}
-	
+
 	var args = this["arg[]"]; // null unless this forth has already been callforth()ed.
 	var forth;
 	var field = 1;
 
 	if (!args) {
 		// callforth() has not yet been executed -- store the new forth.
-		forth = new Forth( target, method, bitmask, options );
+		forth = new Forth( options, bitmask, target, method );
 		(this ["bad[]"] || (this ["bad[]"] = [])).push(forth);
+	} else if (args.length < 1) {
+		return nim; // NOTE: here is a case where a trailing last() may not occur!
 	} else if (args[0]) {
-		forth = new Forth( null, null, bitmask, options );
-		plan (function () {
-			// callforth() has already been executed with an error -- callforth() the new forth.
-			args[field] = forth.come();
-			method.apply(target, args);
-			args[field] = null;
-		}, delay);
+		// callforth() has already been executed with an error -- callforth() the new forth.
+		forth = new Forth( options, bitmask, null, null );
+		sequence(forth, field, args, target, method);
+	} else {
+		forth = nim;
 	}
 
 	return forth;
 };
 
+Forth.prototype.ugly = function ( options, bitmask, target, method ) {
+	return nim;
+};
+
 // Create a forth to handle either a good() or bad() signal.
-Forth.prototype.last = function ( target, method, bitmask, options ) {
+Forth.prototype.last = function ( options, bitmask, target, method ) {
 
-	var vars = revar(arguments);
+	var vars = arguments.length;
 
-	if (vars) {
-		target = vars[0];
-		method = vars[1];
-		bitmask = vars[2];
-		options = vars[3];
+	if (vars < commonArgumentCount) {
+		method = arguments[--vars];
+		target = arguments[--vars];
+		bitmask = arguments[--vars];
+		options = arguments[--vars];
 	}
-	
+
 	var params = this.make(); // null unless this forth has already been callforth()ed.
 	var forth;
+	var field = 0;
 
 	if (!params) {
 		// callforth() has not yet been executed -- store the new forth.
-		forth = new Forth( target, method, bitmask, options );
+		forth = new Forth( options, bitmask, target, method );
 		(this ["last[]"] || (this ["last[]"] = [])).push(forth);
 	} else {
-		forth = new Forth( null, null, bitmask, options );
-		plan (function () {
-			// callforth() has already been executed -- callforth() the new forth.
-			params[0] = forth.come();
-			method.apply(target, params);
-			params[0] = Filler;
-		}, delay);
+		// callforth() has already been executed -- callforth() the new forth.
+		forth = new Forth( options, bitmask, null, null );
+		sequence(forth, field, params, target, method);
 	}
 
 	return forth;
@@ -426,83 +482,93 @@ Forth.prototype.last = function ( target, method, bitmask, options ) {
 
 // Create a good() forth that prevents bad() signals from propogating.
 // (i.e. bad() signals will not be passed down the "good" side of the tree)
-Forth.prototype.pass = function () {
+Forth.prototype.pass = function ( options, bitmask, target, method ) {
+
+	var vars = arguments.length;
+
+	if (vars < commonArgumentCount) {
+		method = arguments[--vars];
+		target = arguments[--vars];
+		bitmask = arguments[--vars];
+		options = arguments[--vars];
+	}
+
+	method = method || relay;
+	bitmask = bitmask | BitSkip;
+
 	var args = this["arg[]"]; // null unless this forth has already been callforth()ed.
-	var method = relay;
-	var target = null;
-	var bitmask = ( BitSkip );
-	var options = null;
 	var forth;
 	var field = 0;
 
 	if (!args) {
 		// callforth() has not yet been executed -- store the new forth.
-		forth = new Forth(target, method, bitmask, options);
+		forth = new Forth( options, bitmask, target, method );
 		(this ["good[]"] || (this ["good[]"] = [])).push(forth);
+	} else if (args.length < 1) {
+		return nim; // NOTE: here is a case where a trailing last() may not occur!
 	} else if (!args[0]) {
-		forth = new Forth(target, method, bitmask, options);
-		plan (function () {
-			// callforth() has already been executed with no error -- callforth() the new forth.
-			args[field] = forth.come();
-			method.apply(target, args);
-			args[field] = null;
-		}, delay);
+		// callforth() has already been executed with no error -- callforth() the new forth.
+		forth = new Forth( options, bitmask, null, null );
+		sequence( forth, field, args, target, method );
+	} else {
+		forth = new Forth( options, bitmask, null, null );
+		ricochet( forth, args, target );
 	}
 
 	return forth;
 };
 
 // Create a forth to handle a heard() signal.
-Forth.prototype.heard = function ( target, method, bitmask, options ) {
+Forth.prototype.heard = function ( options, bitmask, target, method ) {
 
-	var vars = revar(arguments);
+	var vars = arguments.length;
 
-	if (vars) {
-		target = vars[0];
-		method = vars[1];
-		bitmask = vars[2];
-		options = vars[3];
+	if (vars < commonArgumentCount) {
+		method = arguments[--vars];
+		target = arguments[--vars];
+		bitmask = arguments[--vars];
+		options = arguments[--vars];
 	}
-	
+
 	var args = this["arg[]"]; // null unless this forth has already been callforth()ed.
 	var forth;
 
 	if (!args) {
 		// callforth() has not yet been executed -- store the new forth.
-		forth = new Forth(target, method, bitmask, options);
+		forth = new Forth( options, bitmask, target, method );
 		(this ["heard[]"] || (this ["heard[]"] = [])).push(forth);
 	} else {
 		// callforth() has already been executed -- no more heard signals can be sent.
-		forth = noforth;
+		forth = nim;
 	}
 
 	return forth;
 };
 
 // Create a forth to rebroadcast heard() signals with lag.
-Forth.prototype.echo = function ( target, method, bitmask, options ) {
+Forth.prototype.echo = function ( options, bitmask, target, method ) {
 
-	var vars = revar(arguments);
+	var vars = arguments.length;
 
-	if (vars) {
-		target = vars[0];
-		method = vars[1];
-		bitmask = vars[2];
-		options = vars[3];
+	if (vars < commonArgumentCount) {
+		method = arguments[--vars];
+		target = arguments[--vars];
+		bitmask = arguments[--vars];
+		options = arguments[--vars];
 	}
-	
+
 	method = method || resound;
 	bitmask = bitmask | BitLag;
 
-	return Forth.prototype.heard.call ( this, target, method, bitmask, options );
+	return Forth.prototype.heard.call ( this, options, bitmask, target, method );
 };
 
-// noforth is a mechanism to keep heard() invocations from consuming memory unnecessarily.
-// (i.e. when no more heard() signals will be sent)
-noforth = new Forth(null, null, null, null);
-noforth["arg[]"] = [];
-noforth["in()"] = noforth["out()"] = function () {};
-noforth.good = noforth.bad = noforth.heard = function () { return noforth; };
+
+
+nim = new Forth(null, null, null, null);
+nim["arg[]"] = nim["param[]"] = [];
+nim["in()"] = nim["out()"] = function () {};
+nim.good = nim.bad = nim.ugly = nim.last = nim.heard = nim.echo = function () { return nim; };
 
 
 
@@ -514,11 +580,7 @@ Forth.head = function () {
 	var target = this;
 	var forth = new Forth(null, null, null, null);
 
-	plan (function () {
-		args[field] = forth.come();
-		method.apply(target, args);
-		args[field] = null;
-	}, delay);
+	sequence(forth, field, args, target, method);
 
 	return forth;
 };
@@ -532,15 +594,12 @@ Forth.tail = function () {
 	var target = this;
 	var forth = new Forth(null, null, null, null);
 
-	plan (function () {
-		if (args.length > field &&
-			args[field] !== Filler) {
-			args.unshift(Filler);
-		}
-		args[field] = forth.come();
-		method.apply(target, args);
-		args[field] = Filler;
-	}, delay);
+	if (args.length > field &&
+		args[field] !== Filler) {
+		args.unshift(Filler);
+	}
+
+	sequence(forth, field, args, target, method);
 
 	return forth;
 };
@@ -554,11 +613,9 @@ Forth.evoke = function () {
 	var method = args[count - 1];
 	var target = this;
 
-	plan (function () {
-		args[count - 1] = forth.come();
-		method.apply(target, args);
-		args[count - 1] = Filler;
-	}, delay);
+	args[count - 1] = Filler;
+
+	sequence(forth, count - 1, args, target, method);
 
 	return forth;
 };
@@ -572,22 +629,24 @@ Forth.invoke = function ( method ) {
 	var count = args.length;
 	var target = this;
 
-	plan (function () {
-		if (args[count - 1] !== Filler) {
-			args.push(Filler);
-			count++;
-		}
-		args[count - 1] = forth.come();
-		method.apply(target, args);
-		args[count - 1] = Filler;
-	}, delay);
+	if (args[count - 1] !== Filler) {
+		args.push(Filler);
+		count++;
+	}
+
+	sequence(forth, count - 1, args, target, method);
 
 	return forth;
 };
 
+// Filler can be supplied in certain function invocations as an unused placeholder parameter.
+// (this can lead to better memory reuse)
 Forth.Filler = Filler;
 
+// Make bitmask values publically available.
 Forth.BitSkip = BitSkip;
+Forth.BitEventual = BitEventual;
+Forth.BitRebel = BitRebel;
 Forth.BitLag = BitLag;
 
 } );

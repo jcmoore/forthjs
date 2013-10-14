@@ -1,7 +1,7 @@
-// Must be run directly from current working directory (i.e. "node nodepass.js").
+// Must be run directly from the top-level directory (i.e. "node examples/nodepass.js").
 var Forth = require("../forth"),
 	fs = require("fs"),
-	src = "../forth.js",
+	src = "./forth.js",
 	faultRatio = 3;
 
 src += (Date.now() % faultRatio) ? "" : "_NOT_A_VALID_FILE";
@@ -18,7 +18,7 @@ Forth.invoke.call(fs, fs.readFile, src, "utf8", Forth.Filler).last(function (cal
 
 	callforth(err, problems, source);
 }).last(function (callforth, err, problems, source) {
-	var path = "../README.md";
+	var path = "./README.md";
 	path += (Date.now() % faultRatio) ? "" : "_NOT_A_VALID_FILE";
 	fs.readFile( path, "utf8", function (err, readme) {
 		if (err) {
@@ -28,7 +28,7 @@ Forth.invoke.call(fs, fs.readFile, src, "utf8", Forth.Filler).last(function (cal
 		callforth(err, problems, source, readme);
 	});
 }).last(function (callforth, err, problems, source, readme) {
-	var path = "../LICENSE";
+	var path = "./LICENSE";
 	path += (Date.now() % faultRatio) ? "" : "_NOT_A_VALID_FILE";
 	fs.readFile( path, "utf8", function (err, license) {
 		if (err) {
