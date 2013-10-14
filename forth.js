@@ -76,14 +76,9 @@ var run = function ( method, delay ) { return method(); },
 	},
 
 	// Place forth's callforth-method in the correct argument position and invoke provided-method.
-	launch = function (forth, field, args, target, method, repeatable) {
+	launch = function (forth, field, args, target, method) {
 		var callforth = args[field] = forth.come();
 		method.apply(target, args);
-		if (repeatable !== true) {
-			// Force last() signal handlers to respond.
-			// (even if no good() or bad() signals fired -- an "ugly" state)
-			callforth();
-		}
 	},
 
 	// Prepare a launch -- with cleanup.
@@ -312,7 +307,6 @@ Forth.prototype.come = function () {
 		var index;
 		var field;
 		var forth;
-		var repeatable = true;
 
 		if (self && self["heard[]"]) {
 			field = 0;
@@ -344,7 +338,7 @@ Forth.prototype.come = function () {
 
 					// Do not send further heard() signals if callforth has been invoked.
 					if (!invoked || inconsistently) {
-						launch(forth, field, args, forth["as?"], forth["in()"], repeatable);
+						launch(forth, field, args, forth["as?"], forth["in()"]);
 					}
 				}
 				args[field] = Filler;
